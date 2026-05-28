@@ -1,92 +1,58 @@
-# -*- coding: utf-8 -*-
-import os
+import requests
+from bs4 import BeautifulSoup
+import time
 import random
-from flask import Flask, jsonify, render_template_string
-from flask_cors import CORS
+# 如果没有安装，需要先在项目中安装 fake_useragent 库
+from fake_useragent import UserAgent
 
-# 1. 先创建 Flask 应用实例
-app = Flask(__name__)
-CORS(app)
+# 初始化一个UserAgent对象
+ua = UserAgent()
 
-# ---------- 模拟数据（为了让页面立刻显示内容，避免百度爬虫问题）----------
-# 如果您后续申请了 GNews API，可以替换这部分逻辑
-MOCK_ARTICLES = [
-    {"title": "都江堰灌区春灌工作全面启动", "url": "https://example.com/news/1", "source": "四川日报", "topicTag": "水利灌区"},
-    {"title": "成都龙泉驿樱桃采摘节开幕", "url": "https://example.com/news/2", "source": "成都农业", "topicTag": "农业丰收"},
-    {"title": "绵阳志愿者开展灌区环保行动", "url": "https://example.com/news/3", "source": "绵阳日报", "topicTag": "好人好事"},
-    {"title": "眉山柑橘获地理标志产品认证", "url": "https://example.com/news/4", "source": "眉山新闻", "topicTag": "物产美食"},
-    {"title": "德阳汛期安全巡查全面展开", "url": "https://example.com/news/5", "source": "德阳水利", "topicTag": "天气预警"},
-    {"title": "都江堰水利工程科普：鱼嘴分水原理", "url": "https://example.com/news/6", "source": "科普中国", "topicTag": "科普宣传"},
-    {"title": "乐山举办首届灌区丰收节", "url": "https://example.com/news/7", "source": "乐山日报", "topicTag": "农业丰收"},
-    {"title": "资阳整治灌区水环境", "url": "https://example.com/news/8", "source": "资阳观察", "topicTag": "水利灌区"},
-    {"title": "雅安茶叶品牌入选国家级名录", "url": "https://example.com/news/9", "source": "四川茶业", "topicTag": "物产美食"},
-    {"title": "遂宁农技专家深入田间指导", "url": "https://example.com/news/10", "source": "遂宁农业", "topicTag": "行业动态"},
-]
+def smart_fetch_baidu_news(keyword, proxy=None, retries=3):
+    """带反反爬策略的百度新闻抓取函数"""
+    for attempt in range(retries):
+        try:
+            # 1. 随机生成一个User-Agent
+            headers = {
+                'User-Agent': ua.random,
+                'Accept-Language': 'zh-CN,zh;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Connection': 'keep-alive',
+            }
 
-def collect_news():
-    """临时返回模拟数据，后续可替换为真实API"""
-    # 随机打乱顺序，模拟每次刷新不同结果
-    random.shuffle(MOCK_ARTICLES)
-    return MOCK_ARTICLES[:20]   # 最多返回20条
+            # 2. 构建搜索URL
+            search_url = f"https://www.baidu.com/s?tn=news&rtt=1&bsst=1&cl=2&wd={keyword}"
+            print(f"尝试抓取: {keyword}")
 
-@app.route("/api/collect")
-def api_collect():
-    try:
-        articles = collect_news()
-        return jsonify({
-            "success": True,
-            "total": len(articles),
-            "results": articles,
-            "message": "采集成功（演示数据）"
-        })
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "total": 0,
-            "results": [],
-            "message": str(e)
-        }), 500
+            # 3. 发送请求，支持代理
+            proxies = {"http": proxy, "https": proxy} if proxy else None
+            response = requests.get(search_url, headers=headers, proxies=proxies, timeout=15)
+            response.encoding = 'utf-8'
 
-@app.route("/")
-def index():
-    # 这里放之前的前端HTML（完整内容，为了简洁只给框架，请用之前您调好的完整前端代码替换）
-    return render_template_string('''
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>都江堰灌区资讯采集</title>
-    <style>
-        /* 这里请粘贴您之前的前端样式（完整CSS） */
-        body { font-family: sans-serif; background: #f0f7f0; padding: 20px; }
-        .container { max-width: 1200px; margin: auto; }
-        /* 省略详细样式，您可直接复制之前的完整前端代码块 */
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🌾 都江堰灌区智能采集系统</h1>
-        <div id="status">加载中...</div>
-        <div id="results"></div>
-    </div>
-    <script>
-        // 这里请粘贴您之前完整的前端JavaScript代码，并确保 API_URL = '/api/collect'
-        // 下面仅作示意，您务必替换为实际的前端代码（含渲染函数）
-        fetch('/api/collect')
-            .then(r => r.json())
-            .then(data => {
-                if(data.success) {
-                    document.getElementById('results').innerHTML = data.results.map(a => `<div><a href="${a.url}" target="_blank">${a.title}</a> [${a.topicTag}]</div>`).join('');
-                    document.getElementById('status').innerText = `共 ${data.total} 条`;
-                } else {
-                    document.getElementById('status').innerText = '采集失败';
-                }
-            });
-    </script>
-</body>
-</html>
-    ''')
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                # ... (此处放之前解析新闻的代码，保持不变) ...
+                # 解析代码参考原来的 fetch_baidu_news 函数
+                # ...
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+                # 4. 关键：随机暂停，模拟人类行为
+                # 每次成功请求后，随机暂停5-15秒，这是有效的反反爬手段
+                sleep_time = random.uniform(5, 15)
+                print(f"抓取完成，暂停 {sleep_time:.2f} 秒...")
+                time.sleep(sleep_time)
+                return results # 返回解析到的新闻列表
+            else:
+                print(f"请求失败，状态码: {response.status_code}")
+
+        except Exception as e:
+            print(f"抓取 '{keyword}' 时出错 (尝试 {attempt+1}/{retries}): {e}")
+
+        # 在重试前也等待一段时间
+        if attempt < retries - 1:
+            time.sleep(30)
+
+    return [] # 所有重试都失败，返回空列表
+
+# 在你的主循环中，可以这样调用
+# all_news = smart_fetch_baidu_news("成都 水利", proxy="http://你的代理IP:端口")
