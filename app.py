@@ -1,134 +1,95 @@
 # -*- coding: utf-8 -*-
 import os
-import re
 import random
-import time
 import requests
-from bs4 import BeautifulSoup
 from flask import Flask, jsonify, render_template_string
 from flask_cors import CORS
 
-# ---------- 1. 创建 Flask 应用实例（必须放在最前面） ----------
+# ---------- 1. 创建 Flask 应用实例 ----------
 app = Flask(__name__)
 CORS(app)
 
-# ---------- 2. 真实新闻采集函数（爬取人民网等官方源） ----------
-def fetch_real_news():
-    """从多个官方新闻网站采集都江堰灌区相关新闻"""
-    all_articles = []
-    seen_urls = set()
+# ---------- 2. 获取真实新闻（使用 NewsAPI 免费版）----------
+# 如果你不想注册 NewsAPI，可以直接使用下面的模拟数据函数（已备用）
+# 但建议去 https://newsapi.org/register 免费注册，获得 API Key 后替换下面的 YOUR_API_KEY
 
-    # 信源配置：每个信源的URL、解析规则
-    sources = [
-        {
-            "name": "人民网四川频道",
-            "url": "http://sc.people.com.cn/GB/318539/index.html",
-            "parse": lambda soup: [(a.get_text(strip=True), a.get('href')) for a in soup.select('.news_list a') if a.get('href')]
-        },
-        {
-            "name": "四川农村日报",
-            "url": "http://scncrb.scol.com.cn/",
-            "parse": lambda soup: [(a.get_text(strip=True), a.get('href')) for a in soup.select('.list a') if a.get('href')]
-        },
-        {
-            "name": "四川省水利厅",
-            "url": "http://slt.sc.gov.cn/scsslt/",   # 实际可能无法直接获取，备用
-            "parse": lambda soup: []
-        }
-    ]
+NEWSAPI_KEY = "YOUR_API_KEY"  # 请替换为你的真实 Key，或者保持原样（此时会自动使用模拟数据）
 
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+def get_real_news():
+    """从 NewsAPI 获取与都江堰灌区相关的新闻"""
+    if NEWSAPI_KEY == "YOUR_API_KEY":
+        return get_mock_news()  # 未配置 Key 时使用模拟数据
+    
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": "都江堰 OR 灌区 OR 成都水利 OR 绵阳农业 OR 眉山丰收",
+        "apiKey": NEWSAPI_KEY,
+        "language": "zh",
+        "pageSize": 30,
+        "sortBy": "publishedAt"
     }
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        data = resp.json()
+        if data.get("status") == "ok":
+            articles = []
+            for art in data.get("articles", []):
+                articles.append({
+                    "title": art["title"],
+                    "url": art["url"],
+                    "source": art["source"]["name"],
+                    "topicTag": classify_topic(art["title"]),
+                    "published": art["publishedAt"]
+                })
+            return articles
+        else:
+            return get_mock_news()
+    except Exception as e:
+        print("NewsAPI 调用失败:", e)
+        return get_mock_news()
 
-    for src in sources:
-        try:
-            resp = requests.get(src["url"], headers=headers, timeout=10)
-            resp.encoding = 'utf-8'
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            items = src["parse"](soup)
-            for title, link in items[:12]:  # 每个源最多取12条
-                if not title or not link:
-                    continue
-                # 拼接完整URL
-                if link.startswith('/'):
-                    link = src["url"].rstrip('/') + link
-                elif not link.startswith('http'):
-                    link = src["url"].rstrip('/') + '/' + link.lstrip('/')
-                if link in seen_urls:
-                    continue
-                seen_urls.add(link)
-                # 关键词过滤：只保留与都江堰灌区、八市农业水利等相关的新闻
-                keywords = ['都江堰', '灌区', '水利', '春灌', '汛期', '农业', '丰收', '樱桃', '猕猴桃', '柑橘',
-                            '成都', '绵阳', '德阳', '眉山', '乐山', '雅安', '资阳', '遂宁', '好人', '美食', '采摘']
-                if any(kw in title for kw in keywords):
-                    all_articles.append({
-                        "title": title,
-                        "url": link,
-                        "source": src["name"],
-                        "topicTag": classify_topic(title)
-                    })
-            time.sleep(random.uniform(1, 2))  # 礼貌间隔
-        except Exception as e:
-            print(f"抓取 {src['name']} 失败: {e}")
-
-    # 如果采集到的数据太少，补充几条示例数据（避免页面为空）
-    if len(all_articles) < 5:
-        all_articles.extend(get_backup_articles())
-
-    # 随机打乱顺序，避免每次都一样
-    random.shuffle(all_articles)
-    return all_articles[:50]
-
-def classify_topic(title):
-    """根据标题关键词判断主题分类"""
-    kw_map = {
-        '农业丰收': ['丰收', '春灌', '农业', '采摘', '水果', '猕猴桃', '柑橘', '樱桃', '枇杷', '蔬菜', '地理标志'],
-        '水利灌区': ['水利', '灌区', '都江堰', '汛期', '水资源', '东风渠'],
-        '好人好事': ['好人', '暖心', '志愿', '助农', '救', '帮扶'],
-        '物产美食': ['美食', '茶叶', '中药材', '特产', '品牌'],
-        '天气预警': ['天气', '气象', '预警', '暴雨', '高温'],
-        '科普宣传': ['科普', '知识', '宣传', '讲堂'],
-        '行业动态': ['会议', '调研', '部署', '管理', '政策']
-    }
-    for cat, keywords in kw_map.items():
-        if any(kw in title for kw in keywords):
-            return cat
-    return '灌区综合'
-
-def get_backup_articles():
-    """备用数据（防止采集完全失败）"""
+def get_mock_news():
+    """模拟数据（备用）"""
     return [
         {"title": "都江堰灌区春灌工作全面启动", "url": "https://sichuan.scol.com.cn/ggxw/202503/82456789.html", "source": "四川日报", "topicTag": "水利灌区"},
         {"title": "成都龙泉驿樱桃采摘节开幕", "url": "https://www.chengdu.gov.cn/news/202503/123456.html", "source": "成都农业", "topicTag": "农业丰收"},
         {"title": "绵阳志愿者开展灌区环保行动", "url": "https://myrb.my.gov.cn/news/123", "source": "绵阳日报", "topicTag": "好人好事"},
         {"title": "眉山柑橘获地理标志产品认证", "url": "https://www.ms.gov.cn/news/456", "source": "眉山新闻", "topicTag": "物产美食"},
         {"title": "德阳汛期安全巡查全面展开", "url": "https://www.deyang.gov.cn/news/789", "source": "德阳水利", "topicTag": "天气预警"},
+        {"title": "都江堰水利工程科普：鱼嘴分水原理", "url": "https://www.kepu.gov.cn/article/101", "source": "科普中国", "topicTag": "科普宣传"},
+        {"title": "乐山举办首届灌区丰收节", "url": "https://lsrb.leshan.cn/news/111", "source": "乐山日报", "topicTag": "农业丰收"},
+        {"title": "资阳整治灌区水环境", "url": "https://www.zy.gov.cn/news/222", "source": "资阳观察", "topicTag": "水利灌区"},
     ]
+
+def classify_topic(title):
+    kw_map = {
+        '农业丰收': ['丰收','春灌','农业','采摘','水果','猕猴桃','柑橘','樱桃','枇杷','蔬菜','地理标志'],
+        '水利灌区': ['水利','灌区','都江堰','汛期','水资源','东风渠'],
+        '好人好事': ['好人','暖心','志愿','助农','救','帮扶'],
+        '物产美食': ['美食','茶叶','中药材','特产','品牌'],
+        '天气预警': ['天气','气象','预警','暴雨','高温'],
+        '科普宣传': ['科普','知识','宣传','讲堂'],
+        '行业动态': ['会议','调研','部署','管理','政策']
+    }
+    for cat, keywords in kw_map.items():
+        if any(kw in title for kw in keywords):
+            return cat
+    return '灌区综合'
 
 @app.route("/api/collect")
 def api_collect():
-    try:
-        articles = fetch_real_news()
-        return jsonify({
-            "success": True,
-            "total": len(articles),
-            "results": articles,
-            "message": "采集真实新闻成功"
-        })
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "total": 0,
-            "results": [],
-            "message": str(e)
-        }), 500
+    articles = get_real_news()
+    random.shuffle(articles)  # 每次刷新顺序不同
+    return jsonify({
+        "success": True,
+        "total": len(articles),
+        "results": articles,
+        "message": "采集成功"
+    })
 
-# ---------- 3. 前端页面 ----------
 @app.route("/")
 def index():
-    return render_template_string('''
-<!DOCTYPE html>
+    return render_template_string('''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -171,7 +132,7 @@ def index():
 <body>
 <div class="container">
     <div class="header-card">
-        <h1>🌾 都江堰灌区·智采千里眼 <span>八市41县市区</span></h1>
+        <h1>🌾 都江堰灌区·智采 <span>八市41县市区</span></h1>
         <div class="sub">📍 成都·绵阳·德阳·眉山·乐山·雅安·资阳·遂宁 | 农业水利·物产·好人好事·灌区动态·美食</div>
         <div class="city-badge"><div>🏙️ 成都</div><div>绵阳</div><div>德阳</div><div>眉山</div><div>乐山</div><div>雅安</div><div>资阳</div><div>遂宁</div><div>🍒 水果/蔬菜/茶叶</div><div>🎉 丰收节/采摘节</div></div>
     </div>
@@ -181,7 +142,7 @@ def index():
     </div>
     <div class="stats">📊 共采集 <span id="totalCount">0</span> 条 · 涵盖主题 <span id="topicCount">0</span></div>
     <div id="resultsContainer" class="results-grid"><div class="empty-msg">✨ 打开页面自动采集，请稍后...</div></div>
-    <footer>数据来源于人民网四川频道、四川农村日报等公开信源，仅用于学习</footer>
+    <footer>数据来自公开信源，部分为模拟样例，真实数据需配置 NewsAPI Key</footer>
 </div>
 <script>
     const API_URL = '/api/collect';
@@ -191,7 +152,7 @@ def index():
         const resultsDiv = document.getElementById('resultsContainer');
         const totalSpan = document.getElementById('totalCount');
         const topicSpan = document.getElementById('topicCount');
-        statusDiv.innerHTML = '<div class="spinner"></div> 🔍 正在采集真实新闻（约10秒）...';
+        statusDiv.innerHTML = '<div class="spinner"></div> 🔍 正在采集资讯...';
         refreshBtn.disabled = true;
         refreshBtn.style.opacity = '0.6';
         resultsDiv.innerHTML = '<div class="empty-msg">⏳ 请求后端中...</div>';
@@ -209,7 +170,7 @@ def index():
                 totalSpan.innerText = data.total || 0;
                 const topics = new Set(data.results.map(item => item.topicTag).filter(Boolean));
                 topicSpan.innerText = topics.size;
-                statusDiv.innerHTML = `✅ 采集完成 · ${data.results.length} 条真实资讯`;
+                statusDiv.innerHTML = `✅ 采集完成 · ${data.results.length} 条资讯`;
             } else {
                 throw new Error(data.message || '返回数据格式错误');
             }
@@ -224,13 +185,13 @@ def index():
     }
     function renderGroupedResults(articles) {
         const categoryMap = {
-            '农业丰收': ['丰收','春灌','农业','采摘节','丰收节','物产','水果','蔬菜','猕猴桃','柑橘','樱桃','枇杷','蓝莓','西瓜','农产品','地理标志'],
-            '水利灌区': ['水利','灌区管理','都江堰','汛期','灌区动态','水资源'],
-            '好人好事': ['好人','好事','暖心','助农','志愿'],
-            '物产美食': ['美食','茶叶','中药材','特色农产品','品牌','采摘','水果节','甜瓜','草莓'],
-            '天气预警': ['天气','气象','汛情','重大天气'],
-            '科普宣传': ['科普','行业科普','媒体宣传','宣传'],
-            '行业动态': ['行业重要新闻','动态','政策','管理','会议']
+            '农业丰收': ['丰收','春灌','农业','采摘','水果','猕猴桃','柑橘','樱桃','枇杷','蔬菜','地理标志'],
+            '水利灌区': ['水利','灌区','都江堰','汛期','水资源'],
+            '好人好事': ['好人','暖心','志愿','助农'],
+            '物产美食': ['美食','茶叶','中药材','特产','品牌'],
+            '天气预警': ['天气','气象','预警'],
+            '科普宣传': ['科普','知识','宣传'],
+            '行业动态': ['会议','调研','部署','管理','政策']
         };
         const enhanced = articles.map(art => {
             let cat = '灌区综合';
@@ -303,7 +264,6 @@ def index():
 </html>
     ''')
 
-# ---------- 4. 启动服务器 ----------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
